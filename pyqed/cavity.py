@@ -455,7 +455,6 @@ class Cavity():
         n_cav = self.n_cav
         a = lil_matrix((n_cav, n_cav))
         a.setdiag(np.sqrt(np.arange(1, n_cav)), 1)
-
         return a.tocsr()
 
     def create(self):

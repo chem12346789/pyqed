@@ -63,7 +63,7 @@ class Redfield_solver:
         self.H = H
         return
 
-    def evolve(self, rho0, dt, Nt, evecs=None, e_ops=[], store_states=False, t0=0, nout=1):
+    def evolve(self, rho0, dt, Nt, evecs=None, e_ops=[], store_states=False, t0=0, nout=1, return_result=True):
         '''
         propogate the open quantum dynamics
 
@@ -85,7 +85,8 @@ class Redfield_solver:
         if self.R is None:
             R, evecs = self.redfield_tensor()
 
-        result = _redfield(self.R, rho0, evecs=self.evecs, Nt=Nt, dt=dt, t0=t0, e_ops=e_ops)
+        result = _redfield(self.R, rho0, evecs=self.evecs, Nt=Nt,
+                           dt=dt, t0=t0, e_ops=e_ops, return_result=return_result)
 
         return result
 
@@ -216,7 +217,7 @@ class Redfield_solver:
 
             E = np.exp(evals1[:,np.newaxis] * t[np.newaxis,:])
             # self.U =  np.einsum('aj, jk, jb -> abk', U1, E, U2)
-            self.U =  oe.contract('aj, jk, jb -> abk', U1, E, U2)
+            self.U = oe.contract('aj, jk, jb -> abk', U1, E, U2)
 
         self.G = -1j * self.U
 

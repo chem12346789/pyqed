@@ -13,10 +13,12 @@ import sympy as sp
 import math
 from tqdm import tqdm
 from scipy.sparse import coo_matrix
-from numpy import linalg as la
+from scipy import linalg as la
+import os
 # from cvxopt import solvers, matrix
 
 
+@njit
 def spectrum_exp(w, res, expn, etal, sigma=-1):
     for i in range(len(etal)):
         res += etal[i] / (expn[i] + sigma * 1.j * w)
@@ -56,6 +58,7 @@ def sort_symmetry(etal, expn, if_sqrt=True):
     return etal, etar, etaa, expn
 
 
+@njit
 def fit_t(t, res, expn, etal):
     for i in range(len(etal)):
         res += etal[i] * np.exp(-expn[i] * t)
@@ -493,7 +496,7 @@ def prony_fitting(h, t, nind, scale, n, gamma_real=None, gamma_imag=None):
 
     omega_new_temp = (la.inv(gamma_m.T @ gamma_m) @
                       gamma_m.T @ h_m).reshape(2, n_row)
-    # 
+    #
     omega_new = omega_new_temp[0, :] + 1.j*omega_new_temp[1, :]
 
     etal_p = omega_new
@@ -501,7 +504,7 @@ def prony_fitting(h, t, nind, scale, n, gamma_real=None, gamma_imag=None):
     return sort_symmetry(etal_p, expn_p)
 
 
-def decompose_spectrum_prony(spe: sp.core.mul.Mul, w_sp: sp.core.symbol.Symbol, beta, nind: int or list, scale=50, n=1000, npsd=100, bose_fermi=1):
+def decompose_spectrum_prony(spe: sp.core.mul.Mul, w_sp: sp.core.symbol.Symbol, beta, nind: int or list, scale=250000, n=1250, npsd=10, bose_fermi=1):
     '''
     decompose the spectrum with prony method
     input
@@ -539,6 +542,17 @@ def decompose_spectrum_prony(spe: sp.core.mul.Mul, w_sp: sp.core.symbol.Symbol, 
     return prony_fitting(res_t, t, nind, scale, n)
 
 
+def single_oscillator(omega: float, w_sp: sp.core.symbol.Symbol, beta: float, nind: int):
+    etal = np.array([1/(2 * (1-np.exp(-beta * omega))), -1 /
+                    (2 * (1-np.exp(beta * omega)))], dtype=complex)
+    etar = np.array([-1/(2 * (1-np.exp(beta * omega))), 1 /
+                    (2 * (1-np.exp(-beta * omega)))], dtype=complex)
+    etaa = np.sqrt(np.abs(etal + etar))
+    expn = np.array([1.j * omega, -1.j * omega])
+    return etal, etar, etaa, expn
+
+
+@njit
 def gen_hash_value(key, nind, comb_list):
     '''
     generate the hash value for the key
@@ -551,6 +565,7 @@ def gen_hash_value(key, nind, comb_list):
     return hash_value
 
 
+@njit
 def key_plus(key, pos):
     '''
     generate the key for the \rho_{{n}^{+}_{k}}
@@ -560,6 +575,7 @@ def key_plus(key, pos):
     return key1
 
 
+@njit
 def key_minus(key, pos):
     '''
     generate the key for the \rho_{{n}^{-}_{k}}
@@ -569,6 +585,7 @@ def key_minus(key, pos):
     return key1
 
 
+@njit
 def hash_plus(key, pos, nind, comb_list):
     '''
     generate the hash value for the \rho_{{n}^{+}_{k}}
@@ -578,6 +595,7 @@ def hash_plus(key, pos, nind, comb_list):
     return gen_hash_value(key1, nind, comb_list)
 
 
+@njit
 def hash_minus(key, pos, nind, comb_list):
     '''
     generate the hash value for the \rho_{{n}^{-}_{k}}
@@ -587,6 +605,7 @@ def hash_minus(key, pos, nind, comb_list):
     return gen_hash_value(key1, nind, comb_list)
 
 
+@njit
 def gen_keys_element(keys, iado, comb_list, nind, lmax):
     '''
     construct the keys for the iado-th element
@@ -602,6 +621,7 @@ def gen_keys_element(keys, iado, comb_list, nind, lmax):
             keys[hash_val] = key_minus(keys[iado], mp)
 
 
+@njit
 def gen_keys(keys, lmax, nind, comb_list):
     '''
     construct the keys for the whole system
@@ -702,12 +722,138 @@ def rk4(ddos, ddos1, ddos2, ddos3, keys, lmax, bath_list, mode, system, system_d
         ddos[i] += ddos1[i] * dt / 6
 
 
+@njit
+def gen_index2(iado, i, j, nsys):
+    return iado * nsys * nsys + i * nsys + j
+
+
+def allcator_H(H, dot_ddos, iado, i, j):
+    nsys = len(H)
+    for k in range(nsys):
+        index1 = gen_index2(iado, i, k, nsys)
+        index2 = gen_index2(iado, j, k, nsys)
+        dot_ddos[index1, index2] -= 1.j * H[i, j]
+        index1 = gen_index2(iado, k, j, nsys)
+        index2 = gen_index2(iado, k, i, nsys)
+        dot_ddos[index1, index2] += 1.j * H[i, j]
+
+
+def allcator_H_l(H, dot_ddos, iado, i, j):
+    nsys = len(H)
+    for k in range(nsys):
+        index1 = gen_index2(iado, i, k, nsys)
+        index2 = gen_index2(iado, j, k, nsys)
+        dot_ddos[index1, index2] += H[i, j]
+
+
+def allcator_H_r(H, dot_ddos, iado, i, j):
+    nsys = len(H)
+    for k in range(nsys):
+        index1 = gen_index2(iado, k, j, nsys)
+        index2 = gen_index2(iado, k, i, nsys)
+        dot_ddos[index1, index2] += H[i, j]
+
+
+def allcator_Q_m(Q, dot_ddos, etaa, etal, etar, n, iado, pos, i, j):
+    nsys = len(Q)
+    for k in range(nsys):
+        index1 = gen_index2(iado, i, k, nsys)
+        index2 = gen_index2(pos, j, k, nsys)
+        dot_ddos[index1, index2] -= 1.j * np.sqrt(n) \
+            / np.sqrt(etaa) * etal * Q[i, j]
+        index1 = gen_index2(iado, k, j, nsys)
+        index2 = gen_index2(pos, k, i, nsys)
+        dot_ddos[index1, index2] += 1.j * np.sqrt(n) \
+            / np.sqrt(etaa) * etar * Q[i, j]
+
+
+def allcator_Q_p(Q, dot_ddos, etaa, n, iado, pos, i, j):
+    nsys = len(Q)
+    for k in range(nsys):
+        index1 = gen_index2(iado, i, k, nsys)
+        index2 = gen_index2(pos, j, k, nsys)
+        dot_ddos[index1, index2] -= 1.j * np.sqrt(n + 1) \
+            * np.sqrt(etaa) * Q[i, j]
+        index1 = gen_index2(iado, k, j, nsys)
+        index2 = gen_index2(pos, k, i, nsys)
+        dot_ddos[index1, index2] += 1.j * np.sqrt(n + 1) \
+            * np.sqrt(etaa) * Q[i, j]
+
+
+def actions_element(actions, A, iado, lcr='l'):
+    '''
+    generate the dot_ddos for the iado-th element
+    '''
+    nsys = len(A)
+
+    for i in range(nsys):
+        for j in range(nsys):
+            if np.abs(A[i, j]) > 1e-10:
+                if (lcr == 'l') or (lcr == 'c'):
+                    allcator_H_l(A, actions, iado, i, j)
+                if (lcr == 'r') or (lcr == 'c'):
+                    allcator_H_r(A, actions, iado, i, j)
+
+
+def propgator_element(propgator, key, lmax, bath_list, mode, H, Q, comb_list, iado):
+    '''
+    generate the dot_ddos for the iado-th element
+    '''
+    # unpack coupling_t
+    expn, etal, etar, etaa = bath_list
+    nind = len(expn)
+    nsys = len(H)
+    for i in range(nsys):
+        for j in range(nsys):
+            index = gen_index2(iado, i, j, nsys)
+            propgator[index, index] -= np.sum(key * expn)
+
+    for i in range(nsys):
+        for j in range(nsys):
+            if np.abs(H[i, j]) > 1e-10:
+                allcator_H(H, propgator, iado, i, j)
+
+    for mp in range(nind):
+        n = key[mp]
+        m = mode[mp]
+        # if np.abs(Q[m][i, j]) > 1e-10:
+        if (n > 0):
+            for i in range(nsys):
+                for j in range(nsys):
+                    pos = hash_minus(key, mp, nind, comb_list)
+                    allcator_Q_m(Q[m], propgator, etaa[mp], etal[mp],
+                                 etar[mp], n, iado, pos, i, j)
+        if (sum(key) < lmax):
+            for i in range(nsys):
+                for j in range(nsys):
+                    pos = hash_plus(key, mp, nind, comb_list)
+                    allcator_Q_p(Q[m], propgator, etaa[mp],
+                                 n, iado, pos, i, j)
+
+
+def generate_propgator(propgator, keys, lmax, bath_list, mode, system_t, coupling_t, comb_list, nmax):
+    '''
+    calculate the liouville operator, i \mathcal{L}, for the whole system
+    '''
+    for iado in range(nmax):
+        propgator_element(
+            propgator, keys[iado], lmax, bath_list, mode, system_t, coupling_t, comb_list, iado)
+
+
+def generate_actions(actions, A, nmax, lcr='l'):
+    '''
+    calculate the actions, \mathcal{A}, for the whole system
+    '''
+    for iado in range(nmax):
+        actions_element(actions, A, iado, lcr)
+
+
 class Bath():
     '''
     bath class for DEOM
     '''
 
-    def __init__(self, spectrum_sp=None, w_sp=None, beta=None, npsd=None, mode=None):
+    def __init__(self, spectrum_sp=None, w_sp=None, beta=None, npsd=None, mode=None, function=None):
         '''
         initialize the bath
         Input:
@@ -722,11 +868,15 @@ class Bath():
         self.npsd = npsd
         self.mode = mode
         self.etal, self.etar, self.etaa, self.expn = [], [], [], []
+
+        if function is None:
+            function = [decompose_spectrum_pade]*len(self.bath)
+
         if ((type(self.bath) is list) and (type(self.beta) is list) and (type(self.npsd) is list)):
             if (len(self.bath) != len(self.beta)) or (len(self.bath) != len(self.npsd)):
                 print("the length of bath, w_sp, beta, npsd is not equal!")
             for i in range(len(self.bath)):
-                etal_p, etar_p, etaa_p, expn_p = decompose_spectrum_pade(
+                etal_p, etar_p, etaa_p, expn_p = function[i](
                     self.bath[i], self.w_sp, self.beta[i], self.npsd[i])
                 self.etal = np.append(self.etal, etal_p)
                 self.etar = np.append(self.etar, etar_p)
@@ -788,6 +938,12 @@ class DEOMSolver():
         self.nmod = 0
         self.bath = bath
         self.comb_list = []
+        self.green_function = None
+        self.Δ = None
+        self.V = None
+        self.V_inv = None
+        self.actions = None
+        self.propgator = None
 
     def set_hierarchy(self, lmax):
         '''
@@ -845,10 +1001,7 @@ class DEOMSolver():
         if self.coupling is None:
             raise ValueError('system bath interaction operator is not set.')
 
-    def gen_comb_list(self):
-        '''
-        generate the combination list
-        '''
+    def init_(self):
         # note the maximum number of int64 is  2, 147, 483, 647 which is nearly comb(40, 10)
         combmax = self.nind + self.lmax + 1
         self.comb_list = np.zeros((combmax, combmax), dtype=np.int64)
@@ -860,20 +1013,9 @@ class DEOMSolver():
                 self.comb_list[i, j] = self.comb_list[i - 1, j] \
                     + self.comb_list[i - 1, j - 1]
             self.comb_list[i, 0] = 1
-
         self.nmax = self.comb_list[self.lmax+self.nind, self.lmax]
 
-    def init_(self):
-        # allocate memory for ddos and key
-        self.ddos = [coo_matrix((self.nsys, self.nsys,),
-                                dtype=np.complex128)] * self.nmax
-        self.ddos1 = [coo_matrix((self.nsys, self.nsys,),
-                                 dtype=np.complex128)] * self.nmax
-        self.ddos2 = [coo_matrix((self.nsys, self.nsys,),
-                                 dtype=np.complex128)] * self.nmax
-        self.ddos3 = [coo_matrix((self.nsys, self.nsys,),
-                                 dtype=np.complex128)] * self.nmax
-
+        # allocate memory for keys
         self.keys = np.zeros((self.nmax, self.nind), dtype=np.int64)
         gen_keys(self.keys, self.lmax, self.nind, self.comb_list)
 
@@ -892,8 +1034,17 @@ class DEOMSolver():
             nt: the number of time steps.
         '''
         self.check_()
-        self.gen_comb_list()
         self.init_()
+
+        # allocate memory for ddos
+        self.ddos = [coo_matrix((self.nsys, self.nsys,),
+                                dtype=np.complex128)] * self.nmax
+        self.ddos1 = [coo_matrix((self.nsys, self.nsys,),
+                                 dtype=np.complex128)] * self.nmax
+        self.ddos2 = [coo_matrix((self.nsys, self.nsys,),
+                                 dtype=np.complex128)] * self.nmax
+        self.ddos3 = [coo_matrix((self.nsys, self.nsys,),
+                                 dtype=np.complex128)] * self.nmax
         self.ddos[0] = rho0
 
         t_save = np.zeros(nt + 1, dtype=np.float64)
@@ -918,35 +1069,98 @@ class DEOMSolver():
                 ddos_save[i + 1] = (p1 @ self.ddos[0]).trace()
         return t_save, ddos_save
 
-    # def correlation_4op_3t(self, operator_a, operator_b, operator_c, operator_d, rho0, dt, nt):
-    #     self.check_()
-    #     self.gen_comb_list()
-    #     self.init_()
-    #     self.ddos[0] = rho0
-    #     operator_a, operator_b, operator_c, operator_d = np.array(
-    #         operator_a, dtype=np.complex128), np.array(operator_b, dtype=np.complex128), np.array(operator_c, dtype=np.complex128), np.array(operator_d, dtype=np.complex128)
-    #     # for i in tqdm(range(nt)):
-    #     #     rk4(self.ddos, self.ddos1, self.ddos2, self.ddos3, self.keys, self.lmax, self.bath.expn, self.system, self.system_dipole, self.pulse_system_func,
-    #     #         self.coupling, self.coupling_dipole, self.pulse_coupling_func, self.comb_list, self.nmax, dt, i * dt)
-    #     ddos_bk = np.copy(self.ddos)
+    def gen_generate_propgator(self):
+        '''
+        generate the green function of the system.
+        '''
+        self.check_()
+        self.init_()
+        self.propgator = np.zeros((self.nmax * self.nsys * self.nsys, self.nmax *
+                                   self.nsys * self.nsys), dtype=np.complex128)
+        generate_propgator(self.propgator, self.keys, self.lmax, [
+            self.bath.expn, self.bath.etal, self.bath.etar, self.bath.etaa], self.bath.mode, self.system, self.coupling, self.comb_list, self.nmax)
 
-    #     corr_save = np.zeros(
-    #         (nt, nt, nt), dtype=np.complex128)
-    #     for i in range(nt):
-    #         for j in range(nt):
-    #             for k in range(nt):
-    #                 self.ddos = np.copy(ddos_bk)
-    #                 self.ddos = operator_action_ddos(
-    #                     operator_a, self.ddos, self.nmax)
-    #                 for ti in range(i):
-    #                     self.rk4(dt, ti * dt)
-    #                 self.ddos = operator_action_ddos(
-    #                     operator_b, self.ddos, self.nmax)
-    #                 for tj in range(j):
-    #                     self.rk4(dt, (i + tj) * dt)
-    #                 self.ddos = operator_action_ddos(
-    #                     operator_c, self.ddos, self.nmax)
-    #                 for tk in range(k):
-    #                     self.rk4(dt, (i + j + tk) * dt)
-    #                 corr_save[i, j, k] = np.trace(operator_d @  self.ddos[0])
-    #     return corr_save
+    def correlation_4op_3t(self, operator_a, operator_b, operator_c, operator_d, rho0, T, w_x, w_y, if_full=True, cut_off_min=0.5, cut_off_max=1.1, if_load=False, if_save=False, lcr='llll'):
+        if self.propgator is None:
+            print('propgator is not generated, generating now...')
+            self.gen_generate_propgator()
+            print('propgator is generated.')
+
+        if if_load and os.path.exists('correlation_4op_3t.npz'):
+            print('loading correlation_4op_3t from file...')
+            data = np.load('correlation_4op_3t.npz')
+            self.Δ = data['Δ']
+            self.V = data['V']
+            self.V_inv = data['V_inv']
+            print('correlation_4op_3t is loaded.')
+
+        if self.Δ is None:
+            print('eigenvalues and eigenvectors are not generated, generating now...')
+            self.Δ, self.V = la.eig(self.propgator)
+            self.V_inv = la.pinv(self.V)
+            print('eigenvalues and eigenvectors are generated.')
+
+        if if_save:
+            print('saving correlation_4op_3t to file...')
+            np.savez('correlation_4op_3t.npz', Δ=self.Δ,
+                     V=self.V, V_inv=self.V_inv)
+            print('correlation_4op_3t is saved.')
+
+        self.actions1 = np.zeros((self.nmax * self.nsys * self.nsys, self.nmax *
+                                 self.nsys * self.nsys), dtype=np.complex128)
+        self.actions2 = np.zeros((self.nmax * self.nsys * self.nsys, self.nmax *
+                                 self.nsys * self.nsys), dtype=np.complex128)
+        self.actions3 = np.zeros((self.nmax * self.nsys * self.nsys, self.nmax *
+                                 self.nsys * self.nsys), dtype=np.complex128)
+        self.actions4 = np.zeros((self.nmax * self.nsys * self.nsys, self.nmax *
+                                 self.nsys * self.nsys), dtype=np.complex128)
+
+        generate_actions(self.actions1, operator_d, self.nmax, lcr=lcr[3])
+        generate_actions(self.actions2, operator_c, self.nmax, lcr=lcr[2])
+        generate_actions(self.actions3, operator_b, self.nmax, lcr=lcr[1])
+        generate_actions(self.actions4, operator_a, self.nmax, lcr=lcr[0])
+
+        rho = np.zeros((self.nmax * self.nsys * self.nsys, 1),
+                       dtype=np.complex128)
+        rho[:self.nsys*self.nsys, 0] = (rho0).flatten()
+
+        if if_full:  # do not cut off the small eigenvalues
+            print('calculating auxiliary matrix...')
+            actions1_V = self.actions1 @ self.V
+            V_actions2_V = self.V_inv @ self.actions2 @ self.V
+            V_actions3_V = self.V_inv @ self.actions3 @ self.V
+            V_actions4 = self.V_inv @ (self.actions4 @ rho)
+            c_w = np.zeros((len(w_x), len(w_y)), dtype=np.complex128)
+            V_actions2_V_G_V_actions3_V = V_actions2_V @ (
+                np.diag(np.exp(self.Δ * T)) @ V_actions3_V)
+
+            print('calculating correlation_4op_3t...')
+            for i in tqdm(range(len(w_x))):
+                for j in range(len(w_y)):
+                    c_w[i, j] = np.trace(((actions1_V @ ((1 / (-self.Δ - 1.j * w_x[i])).reshape(len(self.Δ), 1) * (V_actions2_V_G_V_actions3_V @ (
+                        (1 / (-self.Δ - 1.j * w_y[j])).reshape(len(self.Δ), 1) * V_actions4))))[:self.nsys*self.nsys, 0]).reshape(self.nsys, self.nsys))
+        else:
+            print('calculating auxiliary matrix...')
+            cut_off_min = np.min(np.real(self.Δ)) * cut_off_min
+            cut_off_max = np.max(np.real(self.Δ)) * cut_off_max
+            V1 = self.V[:, (np.real(self.Δ) > cut_off_min) &
+                        (np.real(self.Δ) < cut_off_max)]
+            V1_inv = self.V_inv[(np.real(self.Δ) > cut_off_min) & (
+                np.real(self.Δ) < cut_off_max), :]
+            Δ1 = self.Δ[(np.real(self.Δ) > cut_off_min) &
+                        (np.real(self.Δ) < cut_off_max)]
+
+            print('calculating correlation_4op_3t...')
+            actions1_V1 = self.actions1 @ V1
+            V1_actions2_V1 = V1_inv @ self.actions2 @ V1
+            V1_actions3_V1 = V1_inv @ self.actions3 @ V1
+            V1_actions4 = V1_inv @ self.actions4 @ rho
+            c_w = np.zeros((len(w_x), len(w_y)), dtype=np.complex128)
+            V1_actions2_V1_G_V1_actions3_V1 = V1_actions2_V1 @ (
+                np.diag(np.exp(Δ1 * T)) @ V1_actions3_V1)
+
+            for i in tqdm(range(len(w_x))):
+                for j in range(len(w_y)):
+                    c_w[i, j] = np.trace(((actions1_V1 @ ((1 / (-Δ1 - 1.j * w_x[i])).reshape(len(Δ1), 1) * (V1_actions2_V1_G_V1_actions3_V1 @ (
+                        (1 / (-Δ1 - 1.j * w_y[j])).reshape(len(Δ1), 1) * V1_actions4))))[:self.nsys*self.nsys, 0]).reshape(self.nsys, self.nsys))
+        return c_w
