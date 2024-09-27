@@ -1056,7 +1056,7 @@ class DEOMSolver():
 
         t_save[0] = 0
         if p1 is None:
-            ddos_save[0] = self.ddos[0]
+            ddos_save[0] = self.ddos[0].copy()
         else:
             ddos_save[0] = (p1 @ self.ddos[0]).trace()
 
@@ -1064,7 +1064,7 @@ class DEOMSolver():
             self.rk4(dt, i * dt)
             t_save[i + 1] = (i + 1) * dt
             if p1 is None:
-                ddos_save[i + 1] = self.ddos[0]
+                ddos_save[i + 1] = self.ddos[0].copy()
             else:
                 ddos_save[i + 1] = (p1 @ self.ddos[0]).trace()
         return t_save, ddos_save
